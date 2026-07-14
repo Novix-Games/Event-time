@@ -10,8 +10,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="יומן מדידות">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -155,7 +155,10 @@
   <div class="wrap hidden" id="measurementView">
     <div class="row-flex" style="margin-top:0; justify-content:space-between;">
       <button class="btn btn-ghost" id="backHomeBtn">⬅ דף הבית</button>
-      <button class="btn-icon" id="renameBtn" title="שינוי שם המדידה">✏️ שם המדידה</button>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-icon" id="notesBtn" title="הערות כלליות למדידה">📝 הערות</button>
+        <button class="btn-icon" id="renameBtn" title="שינוי שם המדידה">✏️ שם המדידה</button>
+      </div>
     </div>
 
     <div class="card">
@@ -477,6 +480,7 @@
     const ctx = document.getElementById('contextLine');
     ctx.textContent = '📍 ' + (m ? m.name : '');
     ctx.classList.remove('hidden');
+    updateNotesIndicator();
     renderEntries();
   }
 
@@ -492,6 +496,53 @@
     m.name = name;
     document.getElementById('contextLine').textContent = '📍 ' + m.name;
     await persistAll();
+  });
+
+  function updateNotesIndicator(){
+    const m = currentMeasurement();
+    const btn = document.getElementById('notesBtn');
+    if(!btn) return;
+    const has = m && m.notes && m.notes.trim().length > 0;
+    btn.textContent = has ? '📝 הערות ✓' : '📝 הערות';
+  }
+
+  let notesSaveTimer = null;
+  document.getElementById('notesBtn').addEventListener('click', ()=>{
+    const m = currentMeasurement();
+    if(!m) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:520px;">
+        <div class="modal-title">הערות כלליות למדידה</div>
+        <div class="modal-msg">נשמר אוטומטית תוך כדי הקלדה. ההערות יתווספו בתחתית קובץ האקסל בעת ייצוא.</div>
+        <textarea id="notesArea" class="desc-input" style="min-height:160px;" placeholder="כתוב כאן הערות כלליות..."></textarea>
+        <div class="modal-actions" style="margin-top:14px;">
+          <button class="btn btn-primary" data-a="close">סגור</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const ta = overlay.querySelector('#notesArea');
+    ta.value = m.notes || '';
+    keepVisibleOnFocus(ta);
+    setTimeout(()=>{ ta.focus(); }, 80);
+    ta.addEventListener('input', ()=>{
+      clearTimeout(notesSaveTimer);
+      notesSaveTimer = setTimeout(async ()=>{
+        m.notes = ta.value;
+        await persistAll();
+        updateNotesIndicator();
+      }, 500);
+    });
+    const closeAndSave = async ()=>{
+      clearTimeout(notesSaveTimer);
+      m.notes = ta.value;
+      await persistAll();
+      updateNotesIndicator();
+      overlay.remove();
+    };
+    overlay.querySelector('[data-a="close"]').onclick = closeAndSave;
+    overlay.addEventListener('click', (e)=>{ if(e.target===overlay) closeAndSave(); });
   });
 
   // ================= Home: measurement list =================
@@ -817,7 +868,7 @@
   // ================= Copy-to-clipboard export (bypasses file download entirely) =================
   // Pasting tab-separated text directly into Excel/Google Sheets creates proper columns on its own,
   // so this works even in environments where triggering an actual file download is blocked/unreliable.
-  function buildTSV(entries){
+  function buildTSV(entries, notes){
     const header = ['שעת התחלה','שעת סיום','אירוע','קובץ הקלטה משויך'].join('\t');
     const rows = entries.slice().reverse().map(e=>{
       const startStr = `${dateDisplayFromISO(e.dateISO)} ${e.startTime}`;
@@ -827,7 +878,13 @@
       const desc = (e.description || '').replace(/\t/g,' ').replace(/\r?\n/g,' ');
       return [startStr, endStr, desc, recName].join('\t');
     });
-    return [header, ...rows].join('\n');
+    const lines = [header, ...rows];
+    if(notes && notes.trim()){
+      lines.push('');
+      lines.push('הערות:');
+      notes.split(/\r?\n/).forEach(line => lines.push(line));
+    }
+    return lines.join('\n');
   }
   function showCopyModal(text){
     const overlay = document.createElement('div');
@@ -856,15 +913,18 @@
     };
   }
   document.getElementById('copyBtn').addEventListener('click', ()=>{
+    const m = currentMeasurement();
     const entries = currentEntries();
-    if(entries.length===0){ showToast('אין רשומות להעתקה.', 'danger'); return; }
-    showCopyModal(buildTSV(entries));
+    const hasNotes = m && m.notes && m.notes.trim();
+    if(entries.length===0 && !hasNotes){ showToast('אין רשומות או הערות להעתקה.', 'danger'); return; }
+    showCopyModal(buildTSV(entries, m ? m.notes : ''));
   });
 
   document.getElementById('exportBtn').addEventListener('click', ()=>{
     const m = currentMeasurement();
     const entries = currentEntries();
-    if(!m || entries.length === 0){ showToast('אין רשומות לייצוא במדידה זו.', 'danger'); return; }
+    const hasNotes = m && m.notes && m.notes.trim();
+    if(!m || (entries.length === 0 && !hasNotes)){ showToast('אין רשומות או הערות לייצוא במדידה זו.', 'danger'); return; }
     try{
       const wsData = [['שעת התחלה','שעת סיום','אירוע','קובץ הקלטה משויך']];
       entries.slice().reverse().forEach(e=>{ // export in chronological order regardless of on-screen (newest-first) order
@@ -874,9 +934,14 @@
         const recName = rec ? `${e.dateISO}_${e.startTime.replace(/:/g,'-')}.${rec.ext}` : '';
         wsData.push([startDT, endDT, e.description, recName]);
       });
+      const entryRowCount = entries.length; // only these rows get datetime formatting below
+      if(hasNotes){
+        wsData.push([]);
+        wsData.push(['הערות:']);
+        m.notes.split(/\r?\n/).forEach(line => wsData.push([line]));
+      }
       const ws = XLSX.utils.aoa_to_sheet(wsData, {cellDates:true});
-      const range = XLSX.utils.decode_range(ws['!ref']);
-      for(let r=1; r<=range.e.r; r++){
+      for(let r=1; r<=entryRowCount; r++){
         ['A','B'].forEach(col=>{
           const ref = col + (r+1);
           if(ws[ref] && ws[ref].v){ ws[ref].z = 'dd/mm/yyyy hh:mm:ss'; ws[ref].t='d'; }
